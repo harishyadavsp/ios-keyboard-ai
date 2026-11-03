@@ -1,11 +1,14 @@
 package com.iosaikeyboard.ai;
 
 import android.annotation.SuppressLint;
+import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build;
 import android.os.VibrationEffect;
@@ -13,6 +16,7 @@ import android.os.Vibrator;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
@@ -30,7 +34,6 @@ public class IOSAiKeyboardService extends InputMethodService {
     private WebView webView;
     private SharedPreferences prefs;
 
-    // Real-time listener so moving ANY slider/toggle in Settings updates the open keyboard immediately!
     private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
             (sharedPreferences, key) -> pushLivePrefsToWebView();
 
@@ -63,6 +66,16 @@ public class IOSAiKeyboardService extends InputMethodService {
         try { unregisterReceiver(settingsReceiver); } catch (Exception ignored) {}
     }
 
+    @Override
+    public void onComputeInsets(InputMethodService.Insets outInsets) {
+        super.onComputeInsets(outInsets);
+        if (webView != null && webView.getHeight() > 0) {
+            outInsets.contentTopInsets = 0;
+            outInsets.visibleTopInsets = 0;
+            outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_CONTENT;
+        }
+    }
+
     private void pushLivePrefsToWebView() {
         if (webView != null) {
             webView.post(() -> webView.evaluateJavascript("if(window.syncNativePrefs) syncNativePrefs();", null));
@@ -74,19 +87,34 @@ public class IOSAiKeyboardService extends InputMethodService {
     public View onCreateInputView() {
         if (prefs == null) prefs = getSharedPreferences("KeyboardPrefs", MODE_PRIVATE);
 
+        // BUG FIX #1: Make IME window background completely transparent so no dark grey bar appears above the rounded corners
+        try {
+            Dialog dialog = getWindow();
+            if (dialog != null && dialog.getWindow() != null) {
+                Window w = dialog.getWindow();
+                w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            }
+        } catch (Exception ignored) {}
+
         FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(Color.TRANSPARENT);
         container.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
 
         webView = new WebView(this);
-        webView.setBackgroundColor(0x00000000);
+        webView.setBackgroundColor(Color.TRANSPARENT);
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
 
-        int defaultHeightPx = dpToPx(326);
+        int savedHeight = prefs.getInt("height", 216);
+        boolean numRow = prefs.getBoolean("numberRow", false);
+        int initialTotalDp = savedHeight + (numRow ? 42 : 0) + 74;
+
         webView.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                defaultHeightPx
+                dpToPx(initialTotalDp)
         ));
 
         WebSettings settings = webView.getSettings();
@@ -121,17 +149,32 @@ public class IOSAiKeyboardService extends InputMethodService {
             mContext = c;
         }
 
+        // BUG FIX #1: Dynamically resize native WebView height to match exact keyboard height (zero dead space above keyboard)
+        @JavascriptInterface
+        public void resizeInputView(final int totalCssPx) {
+            if (webView == null) return;
+            webView.post(() -> {
+                int targetPx = dpToPx(Math.max(210, Math.min(440, totalCssPx)));
+                ViewGroup.LayoutParams lp = webView.getLayoutParams();
+                if (lp != null && lp.height != targetPx) {
+                    lp.height = targetPx;
+                    webView.setLayoutParams(lp);
+                    webView.requestLayout();
+                }
+            });
+        }
+
         @JavascriptInterface
         public String getPrefsJson() {
             try {
                 JSONObject obj = new JSONObject();
                 obj.put("theme", prefs.getString("theme", "dark"));
-                obj.put("height", prefs.getInt("height", 220));
+                obj.put("height", prefs.getInt("height", 216));
                 obj.put("width", prefs.getInt("width", 100));
                 obj.put("scale", prefs.getInt("scale", 100));
                 obj.put("numScale", prefs.getInt("numScale", 85));
-                obj.put("radius", prefs.getInt("radius", 9));
-                obj.put("gap", prefs.getInt("gap", 5));
+                obj.put("radius", prefs.getInt("radius", 6));
+                obj.put("gap", prefs.getInt("gap", 6));
                 obj.put("glass", prefs.getInt("glass", 0));
                 obj.put("vibeStrength", prefs.getInt("vibeStrength", 10));
                 obj.put("numberRow", prefs.getBoolean("numberRow", false));
@@ -303,26 +346,27 @@ public class IOSAiKeyboardService extends InputMethodService {
 "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no' />\n" +
 "<style>\n" +
 ":root {\n" +
+"  /* BUG FIX #3: Crisp 5.5px classic iOS key radius & balanced vertical spacing */\n" +
 "  --kb-height: 216px; --kb-width: 100%; --key-scale: 1; --num-row-scale: 0.85;\n" +
-"  --key-gap-x: 5px; --key-gap-y: 9px; --key-radius: 8.5px;\n" +
-"  --kb-deck-bg: rgba(26, 27, 34, 0.96); --kb-deck-border: rgba(255, 255, 255, 0.09);\n" +
-"  --key-bg: rgba(74, 76, 89, 0.95); --key-bg-active: rgba(108, 110, 126, 0.98);\n" +
-"  --key-mod-bg: rgba(56, 58, 70, 0.95); --key-mod-active: rgba(92, 94, 110, 0.98);\n" +
-"  --key-shadow: rgba(10, 10, 14, 0.85); --key-text: #ffffff; --toolbar-text: #f2f2f7;\n" +
-"  --toolbar-divider: rgba(255, 255, 255, 0.14); --popup-bg: #5a5c6d; --popup-border: rgba(255, 255, 255, 0.18);\n" +
+"  --key-gap-x: 6px; --key-gap-y: 10px; --key-radius: 5.5px;\n" +
+"  --kb-deck-bg: rgba(28, 29, 36, 0.98); --kb-deck-border: rgba(255, 255, 255, 0.09);\n" +
+"  --key-bg: rgba(74, 76, 89, 0.96); --key-bg-active: rgba(108, 110, 126, 0.98);\n" +
+"  --key-mod-bg: rgba(54, 56, 68, 0.96); --key-mod-active: rgba(92, 94, 110, 0.98);\n" +
+"  --key-shadow: rgba(8, 8, 12, 0.88); --key-text: #ffffff; --toolbar-text: #f2f2f7;\n" +
+"  --toolbar-divider: rgba(255, 255, 255, 0.16); --popup-bg: #5a5c6d; --popup-border: rgba(255, 255, 255, 0.18);\n" +
 "  --accent-color: #007AFF; --glass-blur: 0px;\n" +
 "}\n" +
 "html.light {\n" +
-"  --kb-deck-bg: rgba(209, 212, 219, 0.96); --kb-deck-border: rgba(0, 0, 0, 0.1);\n" +
-"  --key-bg: rgba(255, 255, 255, 0.96); --key-bg-active: rgba(225, 228, 235, 0.98);\n" +
-"  --key-mod-bg: rgba(173, 179, 190, 0.96); --key-mod-active: rgba(255, 255, 255, 0.98);\n" +
-"  --key-shadow: rgba(130, 134, 142, 0.85); --key-text: #000000; --toolbar-text: #1c1c1e;\n" +
-"  --toolbar-divider: rgba(0, 0, 0, 0.14); --popup-bg: #ffffff; --popup-border: rgba(0, 0, 0, 0.14);\n" +
+"  --kb-deck-bg: rgba(209, 212, 219, 0.98); --kb-deck-border: rgba(0, 0, 0, 0.08);\n" +
+"  --key-bg: rgba(255, 255, 255, 0.98); --key-bg-active: rgba(225, 228, 235, 0.98);\n" +
+"  --key-mod-bg: rgba(171, 177, 189, 0.98); --key-mod-active: rgba(255, 255, 255, 0.98);\n" +
+"  --key-shadow: rgba(132, 136, 144, 0.9); --key-text: #000000; --toolbar-text: #1c1c1e;\n" +
+"  --toolbar-divider: rgba(0, 0, 0, 0.15); --popup-bg: #ffffff; --popup-border: rgba(0, 0, 0, 0.14);\n" +
 "}\n" +
 "html.nothing {\n" +
 "  --kb-deck-bg: rgba(0, 0, 0, 0.98); --kb-deck-border: rgba(255, 255, 255, 0.28);\n" +
-"  --key-bg: rgba(12, 12, 12, 0.95); --key-bg-active: #ffffff;\n" +
-"  --key-mod-bg: rgba(24, 24, 24, 0.95); --key-mod-active: #ffffff;\n" +
+"  --key-bg: rgba(12, 12, 12, 0.96); --key-bg-active: #ffffff;\n" +
+"  --key-mod-bg: rgba(24, 24, 24, 0.96); --key-mod-active: #ffffff;\n" +
 "  --key-shadow: transparent; --key-text: #ffffff; --toolbar-text: #ffffff;\n" +
 "  --toolbar-divider: rgba(255, 255, 255, 0.25); --popup-bg: #000000; --popup-border: rgba(255, 255, 255, 0.4);\n" +
 "  --accent-color: #ea1d25;\n" +
@@ -330,83 +374,91 @@ public class IOSAiKeyboardService extends InputMethodService {
 "html.nothing .kb-key { font-family: monospace; border: 1px solid rgba(255,255,255,0.22); }\n" +
 "html.nothing .kb-key.pressed { color: #000000 !important; }\n" +
 "* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }\n" +
-"body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: transparent; color: var(--key-text); overflow: hidden; width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; }\n" +
+"html, body {\n" +
+"  margin: 0; padding: 0;\n" +
+"  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;\n" +
+"  background: transparent !important;\n" +
+"  color: var(--key-text); overflow: hidden; width: 100vw; height: 100%;\n" +
+"  display: flex; flex-direction: column; justify-content: flex-end;\n" +
+"}\n" +
 ".kb-deck {\n" +
 "  width: var(--kb-width); margin: 0 auto;\n" +
 "  background-color: var(--kb-deck-bg);\n" +
 "  backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));\n" +
 "  border-top: 1px solid var(--kb-deck-border);\n" +
-"  border-top-left-radius: 26px; border-top-right-radius: 26px;\n" +
-"  padding: 5px 5px 2px 5px; position: relative; touch-action: none;\n" +
-"  transition: width 0.24s cubic-bezier(0.32, 0.72, 0, 1), margin 0.24s cubic-bezier(0.32, 0.72, 0, 1), background-color 0.22s ease;\n" +
+"  border-top-left-radius: 24px; border-top-right-radius: 24px;\n" +
+"  padding: 5px 4px 2px 4px; position: relative; touch-action: none;\n" +
+"  transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1), background-color 0.2s ease;\n" +
 "}\n" +
 ".kb-deck.hand-left { margin-left: 0; margin-right: auto; }\n" +
 ".kb-deck.hand-right { margin-left: auto; margin-right: 0; }\n" +
 ".toolbar { width: 100%; height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px; margin-bottom: 3px; }\n" +
-".tool-btn { width: 34px; height: 32px; border-radius: 99px; border: none; background: transparent; color: var(--toolbar-text); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.12s cubic-bezier(0.2,0.9,0.3,1.2); }\n" +
+".tool-btn { width: 34px; height: 32px; border-radius: 99px; border: none; background: transparent; color: var(--toolbar-text); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.1s ease; }\n" +
 ".tool-btn:active { transform: scale(0.86); }\n" +
 ".predictions { flex: 1; display: flex; align-items: center; justify-content: space-around; height: 100%; padding: 0 4px; }\n" +
-".sug-btn { flex: 1; height: 28px; border: none; background: transparent; color: var(--toolbar-text); font-size: 14.5px; border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform 0.1s ease, background-color 0.12s ease; }\n" +
-".sug-btn:active { transform: scale(0.94); background: rgba(128,128,128,0.18); }\n" +
-".divider { width: 1px; height: 15px; background: var(--toolbar-divider); opacity: 0.35; }\n" +
-".kb-stage { position: relative; width: 100%; height: var(--kb-height); transition: height 0.24s cubic-bezier(0.32, 0.72, 0, 1); }\n" +
-".kb-rows { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: var(--key-gap-y); padding: 2px 1px; transition: opacity 0.18s ease; }\n" +
+".sug-btn { flex: 1; height: 28px; border: none; background: transparent; color: var(--toolbar-text); font-size: 14.5px; border-radius: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform 0.1s ease, background-color 0.12s ease; }\n" +
+".sug-btn:active { transform: scale(0.95); background: rgba(128,128,128,0.18); }\n" +
+".divider { width: 1px; height: 16px; background: var(--toolbar-divider); opacity: 0.45; }\n" +
+".kb-stage { position: relative; width: 100%; height: var(--kb-height); transition: height 0.2s cubic-bezier(0.32, 0.72, 0, 1); }\n" +
+".kb-rows { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: var(--key-gap-y); padding: 2px 2px; transition: opacity 0.16s ease; }\n" +
 ".kb-row { display: flex; justify-content: center; align-items: stretch; flex: 1; gap: var(--key-gap-x); width: 100%; }\n" +
 ".kb-row.num-row { flex: calc(0.82 * var(--num-row-scale)); }\n" +
 ".kb-key {\n" +
 "  position: relative; flex: 1; background-color: var(--key-bg); color: var(--key-text);\n" +
 "  border-radius: calc(var(--key-radius) * var(--key-scale));\n" +
-"  box-shadow: 0 1.5px 0 var(--key-shadow);\n" +
+"  box-shadow: 0 1.2px 0 var(--key-shadow);\n" +
 "  display: flex; align-items: center; justify-content: center;\n" +
-"  font-size: calc(21px * var(--key-scale)); cursor: pointer;\n" +
+"  font-size: calc(21.5px * var(--key-scale)); font-weight: 400; cursor: pointer;\n" +
 "  transform: scale(var(--key-scale));\n" +
-"  transition: transform 0.05s cubic-bezier(0.2,0.9,0.3,1.15), background-color 0.06s ease, border-radius 0.18s ease;\n" +
+"  transition: transform 0.045s cubic-bezier(0.2,0.9,0.3,1.15), background-color 0.05s ease, border-radius 0.16s ease;\n" +
 "}\n" +
+".kb-key.letter-key { padding-bottom: 2px; }\n" +
+".kb-row.num-row .kb-key { font-size: calc(17px * var(--key-scale) * var(--num-row-scale)); padding-bottom: 0; }\n" +
 ".kb-key.mod-key { background-color: var(--key-mod-bg); font-size: calc(15.5px * var(--key-scale)); font-weight: 500; }\n" +
-".kb-key.pressed { background-color: var(--key-bg-active); transform: scale(calc(var(--key-scale) * 0.91)); }\n" +
+".kb-key.pressed { background-color: var(--key-bg-active); transform: scale(calc(var(--key-scale) * 0.92)); }\n" +
 ".kb-key.shift-active { background-color: #ffffff !important; color: #000000 !important; }\n" +
 ".key-popup {\n" +
-"  position: absolute; bottom: calc(100% + 7px); left: 50%;\n" +
-"  transform: translateX(-50%) scale(0.72) translateY(8px);\n" +
+"  position: absolute; bottom: calc(100% + 6px); left: 50%;\n" +
+"  transform: translateX(-50%) scale(0.75) translateY(8px);\n" +
 "  width: 48px; height: 56px; background-color: var(--popup-bg); color: var(--key-text);\n" +
-"  border: 1px solid var(--popup-border); border-radius: 11px;\n" +
-"  box-shadow: 0 8px 20px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;\n" +
+"  border: 1px solid var(--popup-border); border-radius: 10px;\n" +
+"  box-shadow: 0 8px 20px rgba(0,0,0,0.38); display: flex; align-items: center; justify-content: center;\n" +
 "  font-size: 28px; opacity: 0; pointer-events: none;\n" +
-"  transition: opacity 0.04s ease, transform 0.07s cubic-bezier(0.2,0.9,0.3,1.15); z-index: 60;\n" +
+"  transition: opacity 0.04s ease, transform 0.065s cubic-bezier(0.2,0.9,0.3,1.15); z-index: 60;\n" +
 "}\n" +
 ".kb-key.show-popup .key-popup { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }\n" +
-".kb-chin { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 2px 12px 0 12px; }\n" +
-".chin-emoji-btn { width: 30px; height: 30px; border: none; background: transparent; color: var(--toolbar-text); opacity: 0.88; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: transform 0.12s ease; }\n" +
-".chin-emoji-btn:active { transform: scale(0.84); background: rgba(255,255,255,0.12); }\n" +
+"/* BUG FIX #2: Clean bottom chin without duplicate home bar pill */\n" +
+".kb-chin { height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 1px 10px 0 10px; }\n" +
+".chin-emoji-btn { width: 28px; height: 28px; border: none; background: transparent; color: var(--toolbar-text); opacity: 0.86; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: transform 0.1s ease; }\n" +
+".chin-emoji-btn:active { transform: scale(0.84); background: rgba(128,128,128,0.16); }\n" +
 "#glideCanvas { position: absolute; top: 0; left: 0; z-index: 25; pointer-events: none; display: none; }\n" +
 ".overlay-drawer {\n" +
 "  position: absolute; inset: 0; background-color: var(--kb-deck-bg);\n" +
 "  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);\n" +
-"  border-radius: 14px; z-index: 50; display: flex; flex-direction: column;\n" +
-"  padding: 8px 10px; gap: 6px; overflow-y: auto;\n" +
-"  opacity: 0; transform: translateY(12px) scale(0.96); pointer-events: none;\n" +
-"  transition: opacity 0.18s cubic-bezier(0.32,0.72,0,1), transform 0.22s cubic-bezier(0.32,0.72,0,1);\n" +
+"  border-radius: 12px; z-index: 50; display: flex; flex-direction: column;\n" +
+"  padding: 7px 9px; gap: 5px; overflow-y: auto;\n" +
+"  opacity: 0; transform: translateY(10px) scale(0.97); pointer-events: none;\n" +
+"  transition: opacity 0.16s cubic-bezier(0.32,0.72,0,1), transform 0.2s cubic-bezier(0.32,0.72,0,1);\n" +
 "}\n" +
 ".overlay-drawer.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }\n" +
 ".ai-grid { display: grid; grid-template-columns: 1.1fr 1.6fr 1.4fr; grid-template-rows: 1fr 1fr; gap: 6px; flex: 1; }\n" +
-".ai-card { border: 1px solid var(--toolbar-divider); background: rgba(255,255,255,0.07); color: var(--toolbar-text); border-radius: 12px; font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px; transition: transform 0.1s ease; }\n" +
+".ai-card { border: 1px solid var(--toolbar-divider); background: rgba(128,128,128,0.1); color: var(--toolbar-text); border-radius: 11px; font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px; transition: transform 0.1s ease; }\n" +
 ".ai-card:active { transform: scale(0.95); }\n" +
 ".tone-bar { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }\n" +
-".tone-pill { border: 1px solid var(--toolbar-divider); background: rgba(0,122,255,0.18); color: var(--toolbar-text); border-radius: 99px; padding: 5px 12px; font-size: 11.5px; white-space: nowrap; }\n" +
-"/* Classic iOS Mini Settings inside Keyboard */\n" +
-".ios-mini-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; border-bottom: 0.5px solid var(--toolbar-divider); font-size: 12.5px; color: var(--toolbar-text); }\n" +
-".ios-seg { display: flex; background: rgba(120,120,128,0.24); padding: 2px; border-radius: 8px; gap: 2px; }\n" +
-".seg-btn { border: none; background: transparent; color: var(--toolbar-text); padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; transition: all 0.18s ease; }\n" +
+".tone-pill { border: 1px solid var(--toolbar-divider); background: rgba(0,122,255,0.16); color: var(--toolbar-text); border-radius: 99px; padding: 4px 11px; font-size: 11.5px; white-space: nowrap; }\n" +
+".ios-mini-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 4px; border-bottom: 0.5px solid var(--toolbar-divider); font-size: 12.5px; color: var(--toolbar-text); }\n" +
+".ios-seg { display: flex; background: rgba(120,120,128,0.22); padding: 2px; border-radius: 8px; gap: 2px; }\n" +
+".seg-btn { border: none; background: transparent; color: var(--toolbar-text); padding: 4px 9px; border-radius: 6px; font-size: 11px; font-weight: 600; transition: all 0.16s ease; }\n" +
 ".seg-btn.active { background: var(--accent-color); color: #fff; }\n" +
-".ios-mini-switch { position: relative; width: 44px; height: 26px; border-radius: 26px; background: rgba(120,120,128,0.35); transition: background 0.22s ease; cursor: pointer; }\n" +
+".ios-mini-switch { position: relative; width: 44px; height: 26px; border-radius: 26px; background: rgba(120,120,128,0.34); transition: background 0.22s ease; cursor: pointer; }\n" +
 ".ios-mini-switch.active { background: #34C759; }\n" +
 ".ios-mini-thumb { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.25); transition: transform 0.22s cubic-bezier(0.32,0.72,0,1); }\n" +
 ".ios-mini-switch.active .ios-mini-thumb { transform: translateX(18px); }\n" +
-".ios-mini-slider { -webkit-appearance: none; appearance: none; width: 125px; height: 4px; border-radius: 99px; background: rgba(120,120,128,0.35); outline: none; }\n" +
+".ios-mini-slider { -webkit-appearance: none; appearance: none; width: 120px; height: 4px; border-radius: 99px; background: rgba(120,120,128,0.34); outline: none; }\n" +
 ".ios-mini-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }\n" +
 ".emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; overflow-y: auto; flex: 1; font-size: 22px; text-align: center; align-items: center; }\n" +
 ".cat-btn { border: none; background: transparent; font-size: 15px; padding: 3px 7px; border-radius: 99px; opacity: 0.6; }\n" +
-".cat-btn.active { background: rgba(255,255,255,0.2); opacity: 1; }\n" +
+".cat-btn.active { background: rgba(128,128,128,0.24); opacity: 1; }\n" +
 ".toast-pill { position: absolute; left: 50%; top: 4px; transform: translateX(-50%); background: var(--accent-color); color: #fff; padding: 3px 12px; border-radius: 99px; font-size: 11px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity 0.15s; z-index: 90; }\n" +
 "</style>\n" +
 "</head>\n" +
@@ -418,17 +470,17 @@ public class IOSAiKeyboardService extends InputMethodService {
 "      <svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8'><circle cx='12' cy='12' r='9'/><line x1='8' y1='12' x2='16' y2='12'/></svg>\n" +
 "    </button>\n" +
 "    <div id='predictionsContainer' class='predictions'>\n" +
-"      <button class='sug-btn' data-w='The'>The</button>\n" +
+"      <button class='sug-btn' data-w='I'>I</button>\n" +
 "      <div class='divider'></div>\n" +
-"      <button class='sug-btn' data-w='School' style='font-weight:500;'>School</button>\n" +
+"      <button class='sug-btn' data-w='The' style='font-weight:500;'>The</button>\n" +
 "      <div class='divider'></div>\n" +
-"      <button class='sug-btn' data-w='A'>A</button>\n" +
+"      <button class='sug-btn' data-w='You'>You</button>\n" +
 "    </div>\n" +
 "    <button id='aiBtn' class='tool-btn'>\n" +
 "      <svg width='22' height='20' viewBox='0 0 28 24' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round'><line x1='2' y1='8' x2='7.5' y2='8' stroke-width='2'/><line x1='4' y1='12' x2='7.5' y2='12' stroke-width='2'/><line x1='2.5' y1='16' x2='7.5' y2='16' stroke-width='2'/><path d='M11.5 18.5L16.5 5.5L21.5 18.5' stroke-width='2.1'/><line x1='13.2' y1='14.2' x2='19.8' y2='14.2' stroke-width='2'/></svg>\n" +
 "    </button>\n" +
 "  </div>\n" +
-"  <div class='kb-stage'>\n" +
+"  <div id='kbStage' class='kb-stage'>\n" +
 "    <div id='kbRowsContainer' class='kb-rows'>\n" +
 "      <canvas id='glideCanvas'></canvas>\n" +
 "    </div>\n" +
@@ -451,7 +503,6 @@ public class IOSAiKeyboardService extends InputMethodService {
 "        <button data-ai='POETIC' class='tone-pill'>📜 Poetic</button>\n" +
 "      </div>\n" +
 "    </div>\n" +
-"    <!-- Classic iOS Quick Settings Drawer -->\n" +
 "    <div id='settingsOverlay' class='overlay-drawer'>\n" +
 "      <div style='display:flex; justify-content:space-between; align-items:center;'>\n" +
 "        <span style='font-size:13px; font-weight:700; color:var(--toolbar-text);'>iOS Keyboard Settings</span>\n" +
@@ -507,17 +558,17 @@ public class IOSAiKeyboardService extends InputMethodService {
 "      <div id='emojiGrid' class='emoji-grid'></div>\n" +
 "    </div>\n" +
 "  </div>\n" +
+"  <!-- BUG FIX #2: Clean bottom chin with only the iOS Emoji icon, no duplicate pill bar -->\n" +
 "  <div class='kb-chin'>\n" +
 "    <button id='chinEmojiBtn' class='chin-emoji-btn'>\n" +
-"      <svg width='24' height='24' viewBox='0 0 24 24' fill='currentColor'><path d='M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm-3.5 7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-3.5 9c-2.61 0-4.83-1.67-5.65-4h11.3c-.82 2.33-3.04 4-5.65 4z'/></svg>\n" +
+"      <svg width='23' height='23' viewBox='0 0 24 24' fill='currentColor'><path d='M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm-3.5 7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-3.5 9c-2.61 0-4.83-1.67-5.65-4h11.3c-.82 2.33-3.04 4-5.65 4z'/></svg>\n" +
 "    </button>\n" +
-"    <div style='width:100px; height:4px; border-radius:99px; background:rgba(128,128,128,0.35);'></div>\n" +
 "    <div style='width:28px;'></div>\n" +
 "  </div>\n" +
 "</section>\n" +
 "<script>\n" +
 "const state = {\n" +
-"  layout: 'letters', shiftState: 0, lastShiftTap: 0, lastSpaceTap: 0,\n" +
+"  baseHeight: 216, layout: 'letters', shiftState: 0, lastShiftTap: 0, lastSpaceTap: 0,\n" +
 "  numberRow: false, swipeType: true, soundEffects: true, haptics: true,\n" +
 "  spaceTrackpad: true, keyPopups: true, autoCap: true, doubleSpacePeriod: true,\n" +
 "  aiLearn: true, apiKey: '', currentWord: '', prevWord: ''\n" +
@@ -528,11 +579,11 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  numbers: [['1','2','3','4','5','6','7','8','9','0'],['-','/',':',';','(',')','$','&','@','\"'],['#+=','.',',','?','!',\"'\",'BACKSPACE'],['ABC','SPACE','RETURN']],\n" +
 "  symbols: [['[',']','{','}','#','%','^','*','+','='],['_','\\\\','|','~','<','>','€','£','¥','•'],['123','.',',','?','!',\"'\",'BACKSPACE'],['ABC','SPACE','RETURN']]\n" +
 "};\n" +
-"const WORD_POOL = ['The','School','A','I','you','that','this','have','with','from','they','will','would','there','their','what','about','which','when','make','like','time','just','know','take','people','into','year','your','good','some','could','them','other','than','then','now','look','only','come','its','over','think','also','back','after','use','two','how','our','work','first','well','way','even','new','want','because','any','these','give','day','most','awesome','beautiful','hello','please','thank','thanks','tomorrow','today','great','perfect'];\n" +
+"const WORD_POOL = ['The','I','You','School','that','this','have','with','from','they','will','would','there','their','what','about','which','when','make','like','time','just','know','take','people','into','year','your','good','some','could','them','other','than','then','now','look','only','come','its','over','think','also','back','after','use','two','how','our','work','first','well','way','even','new','want','because','any','these','give','day','most','awesome','beautiful','hello','please','thank','thanks','tomorrow','today','great','perfect'];\n" +
 "const EMOJIS = {\n" +
 "  smileys: ['😀','😃','😄','😁','😆','😅','😂','🤣','🥲','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🤩','🥳','😏','😒','😞','😔','😟','😕','🙁','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','🤗','🤔','🤭','🤫','🫠','😶','😐','😑','😬','🙄','😮','😲','🥱','😴','🤤','😵','🥴','🤢','🤮','🤧','😷','🤠','😈','👻','💀','🤖'],\n" +
 "  gestures: ['👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞','🫰','🤟','🤘','🤙','👈','👉','👆','👇','☝️','🫵','👍','👎','✊','👊','🤛','🤜','👏','🙌','🫶','👐','🤲','🤝','🙏','✍️','💅','🤳','💪','👀','👄'],\n" +
-"  hearts: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❤️‍🔥','❣️','💕','💞','💓','💗','💖','💘','💝','💯','💥','💫','💦','✨','🔥','🌟','⭐','🎉'],\n" +
+"  hearts: ['❤️','🧡','💛','💚','💙','💜','🖤','🤎','💔','❤️‍🔥','❣️','💕','💞','💓','💗','💖','💘','💝','💯','💥','💫','💦','✨','🔥','🌟','⭐','🎉'],\n" +
 "  animals: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🦇','🐺','🐴','🦄','🐝','🦋','🐢','🐍','🦖','🐙','🐬','🐳','🦈'],\n" +
 "  food: ['🍏','🍎','🍊','🍋','🍌','🍉','🍇','🍓','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑','🥦','🌽','🥕','🥐','🍞','🧀','🥚','🍳','🥞','🥓','🍔','🍟','🍕','🌭','🥪','🌮','🌯','🥗','🍜','🍣','🍦','🍩','🍪','🎂','🍫','☕','🍺','🍷','🥤'],\n" +
 "  objects: ['⌚','📱','💻','⌨️','🖥️','📷','📹','📞','📺','🔋','🔌','💡','🔦','💸','💵','💰','💳','💎','🔧','🔨','⚙️','🧲','💣','🔪','🛡️','🔮','🔭','🔬','💊','🚀','✈️','🚗','🏆','🎮','🎧','🎸']\n" +
@@ -543,15 +594,47 @@ public class IOSAiKeyboardService extends InputMethodService {
 "let ptrDown = false, isGliding = false, gPts = [], gSeq = [], spcStart = 0;\n" +
 "let bsTimeout = null, bsInterval = null, audioCtx = null;\n" +
 "\n" +
-"/* Automatic Learning AI Dictionary Engine */\n" +
+"/* BUG FIX #1 & #3: Compute exact height (adding +42px when Number Row is ON so keys never squish into circles) and resize native WebView */\n" +
+"function updateStageAndWindowHeight() {\n" +
+"  const extraNumHeight = (state.numberRow && state.layout === 'letters') ? 42 : 0;\n" +
+"  const stagePx = state.baseHeight + extraNumHeight;\n" +
+"  document.documentElement.style.setProperty('--kb-height', stagePx + 'px');\n" +
+"  const totalDeckPx = stagePx + 74;\n" +
+"  if(window.AndroidIME && AndroidIME.resizeInputView) {\n" +
+"    AndroidIME.resizeInputView(totalDeckPx);\n" +
+"  }\n" +
+"}\n" +
+"\n" +
+"/* BUG FIX #4: Smart Gibberish Filter so random test strings like 'FFio' are never learned or shown */\n" +
+"function isValidWordToLearn(w) {\n" +
+"  if(!w || w.length < 2 || w.length > 22) return false;\n" +
+"  if(!/^[a-zA-Z']+$/.test(w)) return false;\n" +
+"  if(/^[A-Z]{2,}[a-z]+$/.test(w)) return false; // Blocks 'FFio'\n" +
+"  if(/(.)\\1\\1/i.test(w)) return false; // Blocks 'aaab'\n" +
+"  if(!/[aeiouyAEIOUY]/.test(w)) return false; // Must contain a vowel\n" +
+"  return true;\n" +
+"}\n" +
+"\n" +
+"function cleanCorruptedLearnedWords() {\n" +
+"  if(!learnedDict || !learnedDict.words) return;\n" +
+"  let changed = false;\n" +
+"  Object.keys(learnedDict.words).forEach(w => {\n" +
+"    if(!isValidWordToLearn(w)) {\n" +
+"      delete learnedDict.words[w];\n" +
+"      changed = true;\n" +
+"    }\n" +
+"  });\n" +
+"  if(changed && window.AndroidIME) AndroidIME.saveLearnedData(JSON.stringify(learnedDict));\n" +
+"}\n" +
+"\n" +
 "function learnWord(rawWord) {\n" +
 "  if(!state.aiLearn || !rawWord) return;\n" +
 "  const clean = rawWord.replace(/[^a-zA-Z']/g, '');\n" +
-"  if(clean.length < 2) return;\n" +
+"  if(!isValidWordToLearn(clean)) return;\n" +
 "  if(!learnedDict.words) learnedDict.words = {};\n" +
 "  if(!learnedDict.bigrams) learnedDict.bigrams = {};\n" +
 "  learnedDict.words[clean] = (learnedDict.words[clean] || 0) + 1;\n" +
-"  if(state.prevWord) {\n" +
+"  if(state.prevWord && isValidWordToLearn(state.prevWord)) {\n" +
 "    const prev = state.prevWord.toLowerCase();\n" +
 "    if(!learnedDict.bigrams[prev]) learnedDict.bigrams[prev] = {};\n" +
 "    learnedDict.bigrams[prev][clean] = (learnedDict.bigrams[prev][clean] || 0) + 1;\n" +
@@ -567,14 +650,15 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  const bigrams = learnedDict.bigrams || {};\n" +
 "  if(!prefix && state.prevWord && bigrams[state.prevWord.toLowerCase()]) {\n" +
 "    const nextMap = bigrams[state.prevWord.toLowerCase()];\n" +
-"    sugs = Object.keys(nextMap).sort((a,b) => nextMap[b] - nextMap[a]);\n" +
+"    sugs = Object.keys(nextMap).filter(isValidWordToLearn).sort((a,b) => nextMap[b] - nextMap[a]);\n" +
 "  } else if(prefix) {\n" +
-"    const learnedMatches = Object.keys(words).filter(w => w.toLowerCase().startsWith(prefix)).sort((a,b) => words[b] - words[a]);\n" +
+"    const learnedMatches = Object.keys(words).filter(w => isValidWordToLearn(w) && w.toLowerCase().startsWith(prefix)).sort((a,b) => words[b] - words[a]);\n" +
 "    const baseMatches = WORD_POOL.filter(w => w.toLowerCase().startsWith(prefix) && !learnedMatches.includes(w));\n" +
 "    sugs = [state.currentWord, ...learnedMatches, ...baseMatches];\n" +
+"  } else {\n" +
+"    sugs = ['I', 'The', 'You'];\n" +
 "  }\n" +
-"  const topLearned = Object.keys(words).sort((a,b) => words[b] - words[a]);\n" +
-"  const fallbacks = [...topLearned, 'The', 'School', 'A', 'I', 'you'];\n" +
+"  const fallbacks = ['I', 'The', 'You', 'School', 'that'];\n" +
 "  for(const f of fallbacks) {\n" +
 "    if(sugs.length >= 3) break;\n" +
 "    if(!sugs.some(x => x.toLowerCase() === f.toLowerCase())) sugs.push(f);\n" +
@@ -602,21 +686,21 @@ public class IOSAiKeyboardService extends InputMethodService {
 "function applyGlass(val) {\n" +
 "  const v = Number(val) || 0;\n" +
 "  document.documentElement.style.setProperty('--glass-blur', (v*0.22).toFixed(1)+'px');\n" +
-"  const deckA = Math.max(0.32, 0.96 - (v/100)*0.58).toFixed(2);\n" +
-"  const keyA = Math.max(0.38, 0.95 - (v/100)*0.52).toFixed(2);\n" +
+"  const deckA = Math.max(0.35, 0.98 - (v/100)*0.55).toFixed(2);\n" +
+"  const keyA = Math.max(0.42, 0.98 - (v/100)*0.50).toFixed(2);\n" +
 "  const t = document.documentElement.className;\n" +
 "  if(t === 'light') {\n" +
 "    document.documentElement.style.setProperty('--kb-deck-bg', `rgba(209,212,219,${deckA})`);\n" +
 "    document.documentElement.style.setProperty('--key-bg', `rgba(255,255,255,${keyA})`);\n" +
-"    document.documentElement.style.setProperty('--key-mod-bg', `rgba(173,179,190,${keyA})`);\n" +
+"    document.documentElement.style.setProperty('--key-mod-bg', `rgba(171,177,189,${keyA})`);\n" +
 "  } else if(t === 'nothing') {\n" +
 "    document.documentElement.style.setProperty('--kb-deck-bg', `rgba(0,0,0,${deckA})`);\n" +
 "    document.documentElement.style.setProperty('--key-bg', `rgba(14,14,14,${keyA})`);\n" +
 "    document.documentElement.style.setProperty('--key-mod-bg', `rgba(26,26,26,${keyA})`);\n" +
 "  } else {\n" +
-"    document.documentElement.style.setProperty('--kb-deck-bg', `rgba(26,27,34,${deckA})`);\n" +
+"    document.documentElement.style.setProperty('--kb-deck-bg', `rgba(28,29,36,${deckA})`);\n" +
 "    document.documentElement.style.setProperty('--key-bg', `rgba(74,76,89,${keyA})`);\n" +
-"    document.documentElement.style.setProperty('--key-mod-bg', `rgba(56,58,70,${keyA})`);\n" +
+"    document.documentElement.style.setProperty('--key-mod-bg', `rgba(54,56,68,${keyA})`);\n" +
 "  }\n" +
 "  document.getElementById('glassValLabel').textContent = v + '%';\n" +
 "}\n" +
@@ -630,7 +714,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "    document.documentElement.className = eff;\n" +
 "    document.querySelectorAll('[data-theme]').forEach(x => x.classList.toggle('active', x.dataset.theme === mode));\n" +
 "\n" +
-"    if(typeof p.height === 'number') document.documentElement.style.setProperty('--kb-height', p.height + 'px');\n" +
+"    if(typeof p.height === 'number') state.baseHeight = p.height;\n" +
 "    if(typeof p.width === 'number') document.documentElement.style.setProperty('--kb-width', p.width + '%');\n" +
 "    if(typeof p.numScale === 'number') document.documentElement.style.setProperty('--num-row-scale', (p.numScale/100).toFixed(2));\n" +
 "    if(typeof p.radius === 'number') document.documentElement.style.setProperty('--key-radius', p.radius + 'px');\n" +
@@ -661,8 +745,12 @@ public class IOSAiKeyboardService extends InputMethodService {
 "    document.getElementById('soundSwitch').classList.toggle('active', state.soundEffects);\n" +
 "    if(p.apiKey !== undefined) state.apiKey = p.apiKey;\n" +
 "    if(p.learnedData) {\n" +
-"      try { learnedDict = JSON.parse(p.learnedData); } catch(e) {}\n" +
+"      try {\n" +
+"        learnedDict = JSON.parse(p.learnedData);\n" +
+"        cleanCorruptedLearnedWords();\n" +
+"      } catch(e) {}\n" +
 "    }\n" +
+"    updateStageAndWindowHeight();\n" +
 "    if(prevNumRow !== state.numberRow) renderKb();\n" +
 "    updateSmartPredictions();\n" +
 "  } catch(e) {}\n" +
@@ -679,6 +767,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "function stopBackspace() { clearTimeout(bsTimeout); clearInterval(bsInterval); }\n" +
 "\n" +
 "function renderKb() {\n" +
+"  updateStageAndWindowHeight();\n" +
 "  Array.from(kbRows.children).forEach(c => { if(c.id !== 'glideCanvas') c.remove(); });\n" +
 "  const rows = [...LAYOUTS[state.layout]];\n" +
 "  if(state.numberRow && state.layout === 'letters') rows.unshift(['1','2','3','4','5','6','7','8','9','0']);\n" +
