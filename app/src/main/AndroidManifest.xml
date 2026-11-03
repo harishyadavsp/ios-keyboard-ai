@@ -4,8 +4,8 @@
 <uses-permission android:name="android.permission.VIBRATE" />
 ​<application
 android:allowBackup="true"
-android:icon="@drawable/ic_ios_keyboard"
-android:roundIcon="@drawable/ic_ios_keyboard"
+android:icon="@android:drawable/sym_def_app_icon"
+android:roundIcon="@android:drawable/sym_def_app_icon"
 android:label="IOS Keyboard AI"
 android:supportsRtl="true"
 android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
