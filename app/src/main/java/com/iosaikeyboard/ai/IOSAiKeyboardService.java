@@ -1,8 +1,10 @@
 package com.iosaikeyboard.ai;
 
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build;
@@ -28,10 +30,49 @@ public class IOSAiKeyboardService extends InputMethodService {
     private WebView webView;
     private SharedPreferences prefs;
 
+    // Real-time listener so moving ANY slider/toggle in Settings updates the open keyboard immediately!
+    private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
+            (sharedPreferences, key) -> pushLivePrefsToWebView();
+
+    private final BroadcastReceiver settingsReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            pushLivePrefsToWebView();
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        prefs = getSharedPreferences("KeyboardPrefs", MODE_PRIVATE);
+        prefs.registerOnSharedPreferenceChangeListener(prefListener);
+        try {
+            IntentFilter filter = new IntentFilter("com.iosaikeyboard.ai.SETTINGS_CHANGED");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(settingsReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(settingsReceiver, filter);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (prefs != null) prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
+        try { unregisterReceiver(settingsReceiver); } catch (Exception ignored) {}
+    }
+
+    private void pushLivePrefsToWebView() {
+        if (webView != null) {
+            webView.post(() -> webView.evaluateJavascript("if(window.syncNativePrefs) syncNativePrefs();", null));
+        }
+    }
+
     @SuppressLint({"SetJavaScriptEnabled", "ClickableViewAccessibility"})
     @Override
     public View onCreateInputView() {
-        prefs = getSharedPreferences("KeyboardPrefs", MODE_PRIVATE);
+        if (prefs == null) prefs = getSharedPreferences("KeyboardPrefs", MODE_PRIVATE);
 
         FrameLayout container = new FrameLayout(this);
         container.setLayoutParams(new ViewGroup.LayoutParams(
@@ -42,7 +83,7 @@ public class IOSAiKeyboardService extends InputMethodService {
         webView = new WebView(this);
         webView.setBackgroundColor(0x00000000);
 
-        int defaultHeightPx = dpToPx(308);
+        int defaultHeightPx = dpToPx(326);
         webView.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 defaultHeightPx
@@ -66,9 +107,7 @@ public class IOSAiKeyboardService extends InputMethodService {
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
-        if (webView != null) {
-            webView.post(() -> webView.evaluateJavascript("if(window.syncNativePrefs) syncNativePrefs();", null));
-        }
+        pushLivePrefsToWebView();
     }
 
     private int dpToPx(int dp) {
@@ -87,13 +126,26 @@ public class IOSAiKeyboardService extends InputMethodService {
             try {
                 JSONObject obj = new JSONObject();
                 obj.put("theme", prefs.getString("theme", "dark"));
-                obj.put("glass", prefs.getInt("glass", 0));
+                obj.put("height", prefs.getInt("height", 220));
+                obj.put("width", prefs.getInt("width", 100));
                 obj.put("scale", prefs.getInt("scale", 100));
+                obj.put("numScale", prefs.getInt("numScale", 85));
+                obj.put("radius", prefs.getInt("radius", 9));
+                obj.put("gap", prefs.getInt("gap", 5));
+                obj.put("glass", prefs.getInt("glass", 0));
+                obj.put("vibeStrength", prefs.getInt("vibeStrength", 10));
                 obj.put("numberRow", prefs.getBoolean("numberRow", false));
                 obj.put("swipeType", prefs.getBoolean("swipeType", true));
                 obj.put("soundEffects", prefs.getBoolean("soundEffects", true));
                 obj.put("haptics", prefs.getBoolean("haptics", true));
+                obj.put("spaceTrackpad", prefs.getBoolean("spaceTrackpad", true));
+                obj.put("keyPopups", prefs.getBoolean("keyPopups", true));
+                obj.put("autoCap", prefs.getBoolean("autoCap", true));
+                obj.put("doubleSpacePeriod", prefs.getBoolean("doubleSpacePeriod", true));
+                obj.put("aiLearn", prefs.getBoolean("aiLearn", true));
+                obj.put("oneHanded", prefs.getString("oneHanded", "off"));
                 obj.put("apiKey", prefs.getString("apiKey", ""));
+                obj.put("learnedData", prefs.getString("learnedData", "{}"));
                 return obj.toString();
             } catch (Exception e) {
                 return "{}";
@@ -116,6 +168,11 @@ public class IOSAiKeyboardService extends InputMethodService {
         }
 
         @JavascriptInterface
+        public void saveLearnedData(String json) {
+            prefs.edit().putString("learnedData", json).apply();
+        }
+
+        @JavascriptInterface
         public void openAppSettings() {
             try {
                 Intent i = new Intent(mContext, SettingsActivity.class);
@@ -128,6 +185,35 @@ public class IOSAiKeyboardService extends InputMethodService {
         public void commitText(String text) {
             InputConnection ic = getCurrentInputConnection();
             if (ic != null) ic.commitText(text, 1);
+        }
+
+        @JavascriptInterface
+        public void replaceCurrentWord(String replacement) {
+            InputConnection ic = getCurrentInputConnection();
+            if (ic == null) return;
+            CharSequence before = ic.getTextBeforeCursor(60, 0);
+            if (before != null) {
+                String str = before.toString();
+                int i = str.length() - 1;
+                while (i >= 0 && !Character.isWhitespace(str.charAt(i))) {
+                    i--;
+                }
+                int deleteLen = str.length() - 1 - i;
+                if (deleteLen > 0) {
+                    ic.deleteSurroundingText(deleteLen, 0);
+                }
+            }
+            ic.commitText(replacement, 1);
+        }
+
+        @JavascriptInterface
+        public String getBeforeCursor(int n) {
+            InputConnection ic = getCurrentInputConnection();
+            if (ic != null) {
+                CharSequence s = ic.getTextBeforeCursor(n, 0);
+                return s != null ? s.toString() : "";
+            }
+            return "";
         }
 
         @JavascriptInterface
@@ -195,13 +281,14 @@ public class IOSAiKeyboardService extends InputMethodService {
         @JavascriptInterface
         public void vibrate(int ms) {
             if (!prefs.getBoolean("haptics", true)) return;
+            int strength = prefs.getInt("vibeStrength", ms);
             try {
                 Vibrator v = (Vibrator) mContext.getSystemService(Context.VIBRATOR_SERVICE);
                 if (v != null && v.hasVibrator()) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                        v.vibrate(VibrationEffect.createOneShot(Math.max(1, strength), VibrationEffect.DEFAULT_AMPLITUDE));
                     } else {
-                        v.vibrate(ms);
+                        v.vibrate(Math.max(1, strength));
                     }
                 }
             } catch (Exception ignored) {}
@@ -216,14 +303,14 @@ public class IOSAiKeyboardService extends InputMethodService {
 "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no' />\n" +
 "<style>\n" +
 ":root {\n" +
-"  --kb-height: 214px; --kb-width: 100%; --key-scale: 1; --num-row-scale: 0.85;\n" +
+"  --kb-height: 216px; --kb-width: 100%; --key-scale: 1; --num-row-scale: 0.85;\n" +
 "  --key-gap-x: 5px; --key-gap-y: 9px; --key-radius: 8.5px;\n" +
 "  --kb-deck-bg: rgba(26, 27, 34, 0.96); --kb-deck-border: rgba(255, 255, 255, 0.09);\n" +
 "  --key-bg: rgba(74, 76, 89, 0.95); --key-bg-active: rgba(108, 110, 126, 0.98);\n" +
 "  --key-mod-bg: rgba(56, 58, 70, 0.95); --key-mod-active: rgba(92, 94, 110, 0.98);\n" +
 "  --key-shadow: rgba(10, 10, 14, 0.85); --key-text: #ffffff; --toolbar-text: #f2f2f7;\n" +
 "  --toolbar-divider: rgba(255, 255, 255, 0.14); --popup-bg: #5a5c6d; --popup-border: rgba(255, 255, 255, 0.18);\n" +
-"  --accent-color: #3b82f6; --glass-blur: 0px;\n" +
+"  --accent-color: #007AFF; --glass-blur: 0px;\n" +
 "}\n" +
 "html.light {\n" +
 "  --kb-deck-bg: rgba(209, 212, 219, 0.96); --kb-deck-border: rgba(0, 0, 0, 0.1);\n" +
@@ -240,41 +327,83 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  --toolbar-divider: rgba(255, 255, 255, 0.25); --popup-bg: #000000; --popup-border: rgba(255, 255, 255, 0.4);\n" +
 "  --accent-color: #ea1d25;\n" +
 "}\n" +
-"html.nothing .kb-key { font-family: monospace; border: 1px solid rgba(255,255,255,0.22); border-radius: 6px; }\n" +
+"html.nothing .kb-key { font-family: monospace; border: 1px solid rgba(255,255,255,0.22); }\n" +
 "html.nothing .kb-key.pressed { color: #000000 !important; }\n" +
 "* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }\n" +
 "body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: transparent; color: var(--key-text); overflow: hidden; width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; }\n" +
-".kb-deck { width: var(--kb-width); margin: 0 auto; background-color: var(--kb-deck-bg); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border-top: 1px solid var(--kb-deck-border); border-top-left-radius: 26px; border-top-right-radius: 26px; padding: 5px 5px 2px 5px; position: relative; touch-action: none; transition: background-color 0.2s ease; }\n" +
+".kb-deck {\n" +
+"  width: var(--kb-width); margin: 0 auto;\n" +
+"  background-color: var(--kb-deck-bg);\n" +
+"  backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));\n" +
+"  border-top: 1px solid var(--kb-deck-border);\n" +
+"  border-top-left-radius: 26px; border-top-right-radius: 26px;\n" +
+"  padding: 5px 5px 2px 5px; position: relative; touch-action: none;\n" +
+"  transition: width 0.24s cubic-bezier(0.32, 0.72, 0, 1), margin 0.24s cubic-bezier(0.32, 0.72, 0, 1), background-color 0.22s ease;\n" +
+"}\n" +
+".kb-deck.hand-left { margin-left: 0; margin-right: auto; }\n" +
+".kb-deck.hand-right { margin-left: auto; margin-right: 0; }\n" +
 ".toolbar { width: 100%; height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px; margin-bottom: 3px; }\n" +
-".tool-btn { width: 34px; height: 32px; border-radius: 99px; border: none; background: transparent; color: var(--toolbar-text); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.1s ease; }\n" +
-".tool-btn:active { transform: scale(0.88); }\n" +
+".tool-btn { width: 34px; height: 32px; border-radius: 99px; border: none; background: transparent; color: var(--toolbar-text); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.12s cubic-bezier(0.2,0.9,0.3,1.2); }\n" +
+".tool-btn:active { transform: scale(0.86); }\n" +
 ".predictions { flex: 1; display: flex; align-items: center; justify-content: space-around; height: 100%; padding: 0 4px; }\n" +
-".sug-btn { flex: 1; height: 28px; border: none; background: transparent; color: var(--toolbar-text); font-size: 14.5px; border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n" +
+".sug-btn { flex: 1; height: 28px; border: none; background: transparent; color: var(--toolbar-text); font-size: 14.5px; border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform 0.1s ease, background-color 0.12s ease; }\n" +
+".sug-btn:active { transform: scale(0.94); background: rgba(128,128,128,0.18); }\n" +
 ".divider { width: 1px; height: 15px; background: var(--toolbar-divider); opacity: 0.35; }\n" +
-".kb-stage { position: relative; width: 100%; height: var(--kb-height); }\n" +
-".kb-rows { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: var(--key-gap-y); padding: 2px 1px; transition: opacity 0.16s ease; }\n" +
+".kb-stage { position: relative; width: 100%; height: var(--kb-height); transition: height 0.24s cubic-bezier(0.32, 0.72, 0, 1); }\n" +
+".kb-rows { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: var(--key-gap-y); padding: 2px 1px; transition: opacity 0.18s ease; }\n" +
 ".kb-row { display: flex; justify-content: center; align-items: stretch; flex: 1; gap: var(--key-gap-x); width: 100%; }\n" +
 ".kb-row.num-row { flex: calc(0.82 * var(--num-row-scale)); }\n" +
-".kb-key { position: relative; flex: 1; background-color: var(--key-bg); color: var(--key-text); border-radius: calc(var(--key-radius) * var(--key-scale)); box-shadow: 0 1.5px 0 var(--key-shadow); display: flex; align-items: center; justify-content: center; font-size: calc(21px * var(--key-scale)); cursor: pointer; transform: scale(var(--key-scale)); transition: transform 0.05s cubic-bezier(0.2,0.9,0.3,1.1), background-color 0.06s ease; }\n" +
+".kb-key {\n" +
+"  position: relative; flex: 1; background-color: var(--key-bg); color: var(--key-text);\n" +
+"  border-radius: calc(var(--key-radius) * var(--key-scale));\n" +
+"  box-shadow: 0 1.5px 0 var(--key-shadow);\n" +
+"  display: flex; align-items: center; justify-content: center;\n" +
+"  font-size: calc(21px * var(--key-scale)); cursor: pointer;\n" +
+"  transform: scale(var(--key-scale));\n" +
+"  transition: transform 0.05s cubic-bezier(0.2,0.9,0.3,1.15), background-color 0.06s ease, border-radius 0.18s ease;\n" +
+"}\n" +
 ".kb-key.mod-key { background-color: var(--key-mod-bg); font-size: calc(15.5px * var(--key-scale)); font-weight: 500; }\n" +
-".kb-key.pressed { background-color: var(--key-bg-active); transform: scale(calc(var(--key-scale) * 0.92)); }\n" +
+".kb-key.pressed { background-color: var(--key-bg-active); transform: scale(calc(var(--key-scale) * 0.91)); }\n" +
 ".kb-key.shift-active { background-color: #ffffff !important; color: #000000 !important; }\n" +
-".key-popup { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%) scale(0.75) translateY(8px); width: 48px; height: 56px; background-color: var(--popup-bg); color: var(--key-text); border: 1px solid var(--popup-border); border-radius: 11px; box-shadow: 0 8px 20px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; font-size: 28px; opacity: 0; pointer-events: none; transition: opacity 0.04s ease, transform 0.07s cubic-bezier(0.2,0.9,0.3,1.1); z-index: 60; }\n" +
+".key-popup {\n" +
+"  position: absolute; bottom: calc(100% + 7px); left: 50%;\n" +
+"  transform: translateX(-50%) scale(0.72) translateY(8px);\n" +
+"  width: 48px; height: 56px; background-color: var(--popup-bg); color: var(--key-text);\n" +
+"  border: 1px solid var(--popup-border); border-radius: 11px;\n" +
+"  box-shadow: 0 8px 20px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;\n" +
+"  font-size: 28px; opacity: 0; pointer-events: none;\n" +
+"  transition: opacity 0.04s ease, transform 0.07s cubic-bezier(0.2,0.9,0.3,1.15); z-index: 60;\n" +
+"}\n" +
 ".kb-key.show-popup .key-popup { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }\n" +
 ".kb-chin { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 2px 12px 0 12px; }\n" +
-".chin-emoji-btn { width: 30px; height: 30px; border: none; background: transparent; color: var(--toolbar-text); opacity: 0.88; display: flex; align-items: center; justify-content: center; border-radius: 50%; }\n" +
-".chin-emoji-btn:active { transform: scale(0.85); background: rgba(255,255,255,0.12); }\n" +
+".chin-emoji-btn { width: 30px; height: 30px; border: none; background: transparent; color: var(--toolbar-text); opacity: 0.88; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: transform 0.12s ease; }\n" +
+".chin-emoji-btn:active { transform: scale(0.84); background: rgba(255,255,255,0.12); }\n" +
 "#glideCanvas { position: absolute; top: 0; left: 0; z-index: 25; pointer-events: none; display: none; }\n" +
-".overlay-drawer { position: absolute; inset: 0; background-color: var(--kb-deck-bg); backdrop-filter: blur(18px); border-radius: 14px; z-index: 50; display: flex; flex-direction: column; padding: 8px; gap: 6px; overflow-y: auto; opacity: 0; transform: translateY(10px) scale(0.96); pointer-events: none; transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1); }\n" +
+".overlay-drawer {\n" +
+"  position: absolute; inset: 0; background-color: var(--kb-deck-bg);\n" +
+"  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);\n" +
+"  border-radius: 14px; z-index: 50; display: flex; flex-direction: column;\n" +
+"  padding: 8px 10px; gap: 6px; overflow-y: auto;\n" +
+"  opacity: 0; transform: translateY(12px) scale(0.96); pointer-events: none;\n" +
+"  transition: opacity 0.18s cubic-bezier(0.32,0.72,0,1), transform 0.22s cubic-bezier(0.32,0.72,0,1);\n" +
+"}\n" +
 ".overlay-drawer.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }\n" +
 ".ai-grid { display: grid; grid-template-columns: 1.1fr 1.6fr 1.4fr; grid-template-rows: 1fr 1fr; gap: 6px; flex: 1; }\n" +
-".ai-card { border: 1px solid var(--toolbar-divider); background: rgba(255,255,255,0.06); color: var(--toolbar-text); border-radius: 12px; font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px; }\n" +
+".ai-card { border: 1px solid var(--toolbar-divider); background: rgba(255,255,255,0.07); color: var(--toolbar-text); border-radius: 12px; font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px; transition: transform 0.1s ease; }\n" +
+".ai-card:active { transform: scale(0.95); }\n" +
 ".tone-bar { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }\n" +
-".tone-pill { border: 1px solid var(--toolbar-divider); background: rgba(59,130,246,0.18); color: var(--toolbar-text); border-radius: 99px; padding: 5px 12px; font-size: 11.5px; white-space: nowrap; }\n" +
-".settings-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 4px; border-bottom: 1px solid var(--toolbar-divider); font-size: 12px; color: var(--toolbar-text); }\n" +
-".theme-pills { display: flex; gap: 5px; }\n" +
-".theme-btn { padding: 4px 9px; border-radius: 8px; border: 1px solid var(--toolbar-divider); background: rgba(255,255,255,0.08); color: var(--toolbar-text); font-size: 11px; }\n" +
-".theme-btn.active { background: var(--accent-color); color: #fff; border-color: transparent; }\n" +
+".tone-pill { border: 1px solid var(--toolbar-divider); background: rgba(0,122,255,0.18); color: var(--toolbar-text); border-radius: 99px; padding: 5px 12px; font-size: 11.5px; white-space: nowrap; }\n" +
+"/* Classic iOS Mini Settings inside Keyboard */\n" +
+".ios-mini-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; border-bottom: 0.5px solid var(--toolbar-divider); font-size: 12.5px; color: var(--toolbar-text); }\n" +
+".ios-seg { display: flex; background: rgba(120,120,128,0.24); padding: 2px; border-radius: 8px; gap: 2px; }\n" +
+".seg-btn { border: none; background: transparent; color: var(--toolbar-text); padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; transition: all 0.18s ease; }\n" +
+".seg-btn.active { background: var(--accent-color); color: #fff; }\n" +
+".ios-mini-switch { position: relative; width: 44px; height: 26px; border-radius: 26px; background: rgba(120,120,128,0.35); transition: background 0.22s ease; cursor: pointer; }\n" +
+".ios-mini-switch.active { background: #34C759; }\n" +
+".ios-mini-thumb { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.25); transition: transform 0.22s cubic-bezier(0.32,0.72,0,1); }\n" +
+".ios-mini-switch.active .ios-mini-thumb { transform: translateX(18px); }\n" +
+".ios-mini-slider { -webkit-appearance: none; appearance: none; width: 125px; height: 4px; border-radius: 99px; background: rgba(120,120,128,0.35); outline: none; }\n" +
+".ios-mini-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }\n" +
 ".emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; overflow-y: auto; flex: 1; font-size: 22px; text-align: center; align-items: center; }\n" +
 ".cat-btn { border: none; background: transparent; font-size: 15px; padding: 3px 7px; border-radius: 99px; opacity: 0.6; }\n" +
 ".cat-btn.active { background: rgba(255,255,255,0.2); opacity: 1; }\n" +
@@ -282,7 +411,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "</style>\n" +
 "</head>\n" +
 "<body>\n" +
-"<section class='kb-deck'>\n" +
+"<section id='kbDeck' class='kb-deck'>\n" +
 "  <div id='toastBanner' class='toast-pill'>Ready</div>\n" +
 "  <div class='toolbar'>\n" +
 "    <button id='settingsBtn' class='tool-btn'>\n" +
@@ -306,7 +435,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "    <div id='aiOverlay' class='overlay-drawer'>\n" +
 "      <div style='display:flex; justify-content:space-between; align-items:center;'>\n" +
 "        <span style='font-size:12px; font-weight:600; color:var(--toolbar-text);'>✨ Gemini AI Writing Tools</span>\n" +
-"        <button id='closeAiBtn' class='theme-btn active'>ABC</button>\n" +
+"        <button id='closeAiBtn' class='seg-btn active'>ABC</button>\n" +
 "      </div>\n" +
 "      <div class='ai-grid'>\n" +
 "        <button data-ai='ASK' class='ai-card' style='grid-row: span 2; flex-direction:column;'>✨<span>Ask AI</span></button>\n" +
@@ -322,44 +451,42 @@ public class IOSAiKeyboardService extends InputMethodService {
 "        <button data-ai='POETIC' class='tone-pill'>📜 Poetic</button>\n" +
 "      </div>\n" +
 "    </div>\n" +
+"    <!-- Classic iOS Quick Settings Drawer -->\n" +
 "    <div id='settingsOverlay' class='overlay-drawer'>\n" +
 "      <div style='display:flex; justify-content:space-between; align-items:center;'>\n" +
-"        <span style='font-size:12px; font-weight:600; color:var(--toolbar-text);'>⚙️ Keyboard Settings</span>\n" +
+"        <span style='font-size:13px; font-weight:700; color:var(--toolbar-text);'>iOS Keyboard Settings</span>\n" +
 "        <div style='display:flex; gap:5px;'>\n" +
-"          <button id='fullAppBtn' class='theme-btn'>📱 Full App</button>\n" +
-"          <button id='closeSettingsBtn' class='theme-btn active'>Done</button>\n" +
+"          <button id='fullAppBtn' class='seg-btn' style='background:rgba(120,120,128,0.25);'>⚙ All Settings</button>\n" +
+"          <button id='closeSettingsBtn' class='seg-btn active'>Done</button>\n" +
 "        </div>\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
+"      <div class='ios-mini-row'>\n" +
 "        <span>Theme</span>\n" +
-"        <div class='theme-pills'>\n" +
-"          <button data-theme='dark' class='theme-btn active'>🌙 Dark</button>\n" +
-"          <button data-theme='light' class='theme-btn'>☀️ Light</button>\n" +
-"          <button data-theme='nothing' class='theme-btn'>🔴 Nothing</button>\n" +
+"        <div class='ios-seg'>\n" +
+"          <button data-theme='dark' class='seg-btn active'>🌙 Dark</button>\n" +
+"          <button data-theme='light' class='seg-btn'>☀️ Light</button>\n" +
+"          <button data-theme='nothing' class='seg-btn'>🔴 Nothing</button>\n" +
 "        </div>\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
-"        <span>Key Scale (<span id='scaleValLabel'>100%</span>)</span>\n" +
-"        <input type='range' id='scaleRange' min='85' max='108' value='100' style='width:120px;' />\n" +
+"      <div class='ios-mini-row'>\n" +
+"        <span>Key Scale (<span id='scaleValLabel' style='color:#007AFF;font-weight:600;'>100%</span>)</span>\n" +
+"        <input type='range' id='scaleRange' min='85' max='110' value='100' class='ios-mini-slider' />\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
-"        <span>Liquid Glass (<span id='glassValLabel'>0%</span>)</span>\n" +
-"        <input type='range' id='glassRange' min='0' max='100' value='0' style='width:120px;' />\n" +
+"      <div class='ios-mini-row'>\n" +
+"        <span>Liquid Glass (<span id='glassValLabel' style='color:#007AFF;font-weight:600;'>0%</span>)</span>\n" +
+"        <input type='range' id='glassRange' min='0' max='100' value='0' class='ios-mini-slider' />\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
-"        <span>Number Row (1-0)</span>\n" +
-"        <input type='checkbox' id='numRowToggle' />\n" +
+"      <div class='ios-mini-row'>\n" +
+"        <span>Dedicated Number Row (1-0)</span>\n" +
+"        <div id='numRowSwitch' class='ios-mini-switch'><div class='ios-mini-thumb'></div></div>\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
-"        <span>QuickPath Swipe & Sounds</span>\n" +
-"        <div style='display:flex; gap:10px;'>\n" +
-"          <label><input type='checkbox' id='swipeToggle' checked /> Swipe</label>\n" +
-"          <label><input type='checkbox' id='soundToggle' checked /> Sound</label>\n" +
-"        </div>\n" +
+"      <div class='ios-mini-row'>\n" +
+"        <span>Slide to Type (QuickPath)</span>\n" +
+"        <div id='swipeSwitch' class='ios-mini-switch active'><div class='ios-mini-thumb'></div></div>\n" +
 "      </div>\n" +
-"      <div class='settings-row'>\n" +
-"        <span>Gemini API Key</span>\n" +
-"        <input type='password' id='apiKeyInput' placeholder='Paste API key' style='width:130px; font-size:11px; padding:3px 6px; border-radius:6px; border:1px solid #555; background:#181820; color:#fff;' />\n" +
+"      <div class='ios-mini-row'>\n" +
+"        <span>Key Click Sounds</span>\n" +
+"        <div id='soundSwitch' class='ios-mini-switch active'><div class='ios-mini-thumb'></div></div>\n" +
 "      </div>\n" +
 "    </div>\n" +
 "    <div id='emojiOverlay' class='overlay-drawer'>\n" +
@@ -373,8 +500,8 @@ public class IOSAiKeyboardService extends InputMethodService {
 "          <button class='cat-btn' data-cat='objects'>💡</button>\n" +
 "        </div>\n" +
 "        <div style='display:flex; gap:4px;'>\n" +
-"          <button id='emojiBsBtn' class='theme-btn'>⌫</button>\n" +
-"          <button id='closeEmojiBtn' class='theme-btn active'>ABC</button>\n" +
+"          <button id='emojiBsBtn' class='seg-btn' style='background:rgba(120,120,128,0.25);'>⌫</button>\n" +
+"          <button id='closeEmojiBtn' class='seg-btn active'>ABC</button>\n" +
 "        </div>\n" +
 "      </div>\n" +
 "      <div id='emojiGrid' class='emoji-grid'></div>\n" +
@@ -384,18 +511,24 @@ public class IOSAiKeyboardService extends InputMethodService {
 "    <button id='chinEmojiBtn' class='chin-emoji-btn'>\n" +
 "      <svg width='24' height='24' viewBox='0 0 24 24' fill='currentColor'><path d='M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm-3.5 7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-3.5 9c-2.61 0-4.83-1.67-5.65-4h11.3c-.82 2.33-3.04 4-5.65 4z'/></svg>\n" +
 "    </button>\n" +
-"    <div style='width:100px; height:4px; border-radius:99px; background:rgba(255,255,255,0.2);'></div>\n" +
+"    <div style='width:100px; height:4px; border-radius:99px; background:rgba(128,128,128,0.35);'></div>\n" +
 "    <div style='width:28px;'></div>\n" +
 "  </div>\n" +
 "</section>\n" +
 "<script>\n" +
-"const state = { layout: 'letters', shiftState: 0, lastShiftTap: 0, numberRow: false, swipeType: true, soundEffects: true };\n" +
+"const state = {\n" +
+"  layout: 'letters', shiftState: 0, lastShiftTap: 0, lastSpaceTap: 0,\n" +
+"  numberRow: false, swipeType: true, soundEffects: true, haptics: true,\n" +
+"  spaceTrackpad: true, keyPopups: true, autoCap: true, doubleSpacePeriod: true,\n" +
+"  aiLearn: true, apiKey: '', currentWord: '', prevWord: ''\n" +
+"};\n" +
+"let learnedDict = { words: {}, bigrams: {} };\n" +
 "const LAYOUTS = {\n" +
 "  letters: [['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['SHIFT','z','x','c','v','b','n','m','BACKSPACE'],['123','SPACE','RETURN']],\n" +
 "  numbers: [['1','2','3','4','5','6','7','8','9','0'],['-','/',':',';','(',')','$','&','@','\"'],['#+=','.',',','?','!',\"'\",'BACKSPACE'],['ABC','SPACE','RETURN']],\n" +
 "  symbols: [['[',']','{','}','#','%','^','*','+','='],['_','\\\\','|','~','<','>','€','£','¥','•'],['123','.',',','?','!',\"'\",'BACKSPACE'],['ABC','SPACE','RETURN']]\n" +
 "};\n" +
-"const WORD_POOL = ['The','School','A','Apple','AI','Keyboard','awesome','beautiful','because','design','good','great','have','hello','here','like','love','make','more','never','new','now','people','perfect','please','right','some','sound','space','system','thank','that','their','there','they','thing','think','this','time','today','tomorrow','very','want','well','what','when','where','with','work','world','would','you','your'];\n" +
+"const WORD_POOL = ['The','School','A','I','you','that','this','have','with','from','they','will','would','there','their','what','about','which','when','make','like','time','just','know','take','people','into','year','your','good','some','could','them','other','than','then','now','look','only','come','its','over','think','also','back','after','use','two','how','our','work','first','well','way','even','new','want','because','any','these','give','day','most','awesome','beautiful','hello','please','thank','thanks','tomorrow','today','great','perfect'];\n" +
 "const EMOJIS = {\n" +
 "  smileys: ['😀','😃','😄','😁','😆','😅','😂','🤣','🥲','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🤩','🥳','😏','😒','😞','😔','😟','😕','🙁','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','🤗','🤔','🤭','🤫','🫠','😶','😐','😑','😬','🙄','😮','😲','🥱','😴','🤤','😵','🥴','🤢','🤮','🤧','😷','🤠','😈','👻','💀','🤖'],\n" +
 "  gestures: ['👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞','🫰','🤟','🤘','🤙','👈','👉','👆','👇','☝️','🫵','👍','👎','✊','👊','🤛','🤜','👏','🙌','🫶','👐','🤲','🤝','🙏','✍️','💅','🤳','💪','👀','👄'],\n" +
@@ -409,6 +542,48 @@ public class IOSAiKeyboardService extends InputMethodService {
 "const gCtx = glideCanvas.getContext('2d');\n" +
 "let ptrDown = false, isGliding = false, gPts = [], gSeq = [], spcStart = 0;\n" +
 "let bsTimeout = null, bsInterval = null, audioCtx = null;\n" +
+"\n" +
+"/* Automatic Learning AI Dictionary Engine */\n" +
+"function learnWord(rawWord) {\n" +
+"  if(!state.aiLearn || !rawWord) return;\n" +
+"  const clean = rawWord.replace(/[^a-zA-Z']/g, '');\n" +
+"  if(clean.length < 2) return;\n" +
+"  if(!learnedDict.words) learnedDict.words = {};\n" +
+"  if(!learnedDict.bigrams) learnedDict.bigrams = {};\n" +
+"  learnedDict.words[clean] = (learnedDict.words[clean] || 0) + 1;\n" +
+"  if(state.prevWord) {\n" +
+"    const prev = state.prevWord.toLowerCase();\n" +
+"    if(!learnedDict.bigrams[prev]) learnedDict.bigrams[prev] = {};\n" +
+"    learnedDict.bigrams[prev][clean] = (learnedDict.bigrams[prev][clean] || 0) + 1;\n" +
+"  }\n" +
+"  state.prevWord = clean;\n" +
+"  if(window.AndroidIME) AndroidIME.saveLearnedData(JSON.stringify(learnedDict));\n" +
+"}\n" +
+"\n" +
+"function updateSmartPredictions() {\n" +
+"  const prefix = state.currentWord.toLowerCase();\n" +
+"  let sugs = [];\n" +
+"  const words = learnedDict.words || {};\n" +
+"  const bigrams = learnedDict.bigrams || {};\n" +
+"  if(!prefix && state.prevWord && bigrams[state.prevWord.toLowerCase()]) {\n" +
+"    const nextMap = bigrams[state.prevWord.toLowerCase()];\n" +
+"    sugs = Object.keys(nextMap).sort((a,b) => nextMap[b] - nextMap[a]);\n" +
+"  } else if(prefix) {\n" +
+"    const learnedMatches = Object.keys(words).filter(w => w.toLowerCase().startsWith(prefix)).sort((a,b) => words[b] - words[a]);\n" +
+"    const baseMatches = WORD_POOL.filter(w => w.toLowerCase().startsWith(prefix) && !learnedMatches.includes(w));\n" +
+"    sugs = [state.currentWord, ...learnedMatches, ...baseMatches];\n" +
+"  }\n" +
+"  const topLearned = Object.keys(words).sort((a,b) => words[b] - words[a]);\n" +
+"  const fallbacks = [...topLearned, 'The', 'School', 'A', 'I', 'you'];\n" +
+"  for(const f of fallbacks) {\n" +
+"    if(sugs.length >= 3) break;\n" +
+"    if(!sugs.some(x => x.toLowerCase() === f.toLowerCase())) sugs.push(f);\n" +
+"  }\n" +
+"  document.querySelectorAll('.sug-btn').forEach((b, i) => {\n" +
+"    const w = sugs[i] || 'The';\n" +
+"    b.textContent = w; b.dataset.w = w;\n" +
+"  });\n" +
+"}\n" +
 "\n" +
 "function playClick(type='letter') {\n" +
 "  if(!state.soundEffects) return;\n" +
@@ -426,9 +601,9 @@ public class IOSAiKeyboardService extends InputMethodService {
 "\n" +
 "function applyGlass(val) {\n" +
 "  const v = Number(val) || 0;\n" +
-"  document.documentElement.style.setProperty('--glass-blur', (v*0.2).toFixed(1)+'px');\n" +
-"  const deckA = Math.max(0.35, 0.96 - (v/100)*0.55).toFixed(2);\n" +
-"  const keyA = Math.max(0.4, 0.95 - (v/100)*0.5).toFixed(2);\n" +
+"  document.documentElement.style.setProperty('--glass-blur', (v*0.22).toFixed(1)+'px');\n" +
+"  const deckA = Math.max(0.32, 0.96 - (v/100)*0.58).toFixed(2);\n" +
+"  const keyA = Math.max(0.38, 0.95 - (v/100)*0.52).toFixed(2);\n" +
 "  const t = document.documentElement.className;\n" +
 "  if(t === 'light') {\n" +
 "    document.documentElement.style.setProperty('--kb-deck-bg', `rgba(209,212,219,${deckA})`);\n" +
@@ -450,9 +625,18 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  if(!window.AndroidIME) return;\n" +
 "  try {\n" +
 "    const p = JSON.parse(AndroidIME.getPrefsJson());\n" +
-"    if(p.theme) {\n" +
-"      document.documentElement.className = p.theme;\n" +
-"      document.querySelectorAll('[data-theme]').forEach(x => x.classList.toggle('active', x.dataset.theme === p.theme));\n" +
+"    const mode = p.theme || 'dark';\n" +
+"    const eff = mode === 'auto' ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : mode;\n" +
+"    document.documentElement.className = eff;\n" +
+"    document.querySelectorAll('[data-theme]').forEach(x => x.classList.toggle('active', x.dataset.theme === mode));\n" +
+"\n" +
+"    if(typeof p.height === 'number') document.documentElement.style.setProperty('--kb-height', p.height + 'px');\n" +
+"    if(typeof p.width === 'number') document.documentElement.style.setProperty('--kb-width', p.width + '%');\n" +
+"    if(typeof p.numScale === 'number') document.documentElement.style.setProperty('--num-row-scale', (p.numScale/100).toFixed(2));\n" +
+"    if(typeof p.radius === 'number') document.documentElement.style.setProperty('--key-radius', p.radius + 'px');\n" +
+"    if(typeof p.gap === 'number') {\n" +
+"      document.documentElement.style.setProperty('--key-gap-x', p.gap + 'px');\n" +
+"      document.documentElement.style.setProperty('--key-gap-y', (p.gap + 4) + 'px');\n" +
 "    }\n" +
 "    if(typeof p.scale === 'number') {\n" +
 "      document.documentElement.style.setProperty('--key-scale', (p.scale/100).toFixed(2));\n" +
@@ -463,18 +647,35 @@ public class IOSAiKeyboardService extends InputMethodService {
 "      document.getElementById('glassRange').value = p.glass;\n" +
 "      applyGlass(p.glass);\n" +
 "    }\n" +
-"    if(typeof p.numberRow === 'boolean') { state.numberRow = p.numberRow; document.getElementById('numRowToggle').checked = p.numberRow; }\n" +
-"    if(typeof p.swipeType === 'boolean') { state.swipeType = p.swipeType; document.getElementById('swipeToggle').checked = p.swipeType; }\n" +
-"    if(typeof p.soundEffects === 'boolean') { state.soundEffects = p.soundEffects; document.getElementById('soundToggle').checked = p.soundEffects; }\n" +
-"    if(p.apiKey !== undefined) document.getElementById('apiKeyInput').value = p.apiKey;\n" +
-"    renderKb();\n" +
+"    const deck = document.getElementById('kbDeck');\n" +
+"    deck.classList.remove('hand-left', 'hand-right');\n" +
+"    if(p.oneHanded === 'left') { deck.classList.add('hand-left'); document.documentElement.style.setProperty('--kb-width', '84%'); }\n" +
+"    else if(p.oneHanded === 'right') { deck.classList.add('hand-right'); document.documentElement.style.setProperty('--kb-width', '84%'); }\n" +
+"\n" +
+"    const prevNumRow = state.numberRow;\n" +
+"    ['numberRow','swipeType','soundEffects','haptics','spaceTrackpad','keyPopups','autoCap','doubleSpacePeriod','aiLearn'].forEach(k => {\n" +
+"      if(typeof p[k] === 'boolean') state[k] = p[k];\n" +
+"    });\n" +
+"    document.getElementById('numRowSwitch').classList.toggle('active', state.numberRow);\n" +
+"    document.getElementById('swipeSwitch').classList.toggle('active', state.swipeType);\n" +
+"    document.getElementById('soundSwitch').classList.toggle('active', state.soundEffects);\n" +
+"    if(p.apiKey !== undefined) state.apiKey = p.apiKey;\n" +
+"    if(p.learnedData) {\n" +
+"      try { learnedDict = JSON.parse(p.learnedData); } catch(e) {}\n" +
+"    }\n" +
+"    if(prevNumRow !== state.numberRow) renderKb();\n" +
+"    updateSmartPredictions();\n" +
 "  } catch(e) {}\n" +
 "}\n" +
 "\n" +
 "function vibe(ms=8) { if(window.AndroidIME) AndroidIME.vibrate(ms); }\n" +
 "function toast(m) { const t = document.getElementById('toastBanner'); t.textContent = m; t.style.opacity = 1; setTimeout(()=>t.style.opacity=0, 1300); }\n" +
-"function commit(s) { if(window.AndroidIME) AndroidIME.commitText(s); updatePredictions(s.trim()); }\n" +
-"function doBackspace() { if(window.AndroidIME) AndroidIME.deleteText(); }\n" +
+"function commit(s) { if(window.AndroidIME) AndroidIME.commitText(s); }\n" +
+"function doBackspace() {\n" +
+"  if(window.AndroidIME) AndroidIME.deleteText();\n" +
+"  if(state.currentWord.length > 0) state.currentWord = state.currentWord.slice(0, -1);\n" +
+"  updateSmartPredictions();\n" +
+"}\n" +
 "function stopBackspace() { clearTimeout(bsTimeout); clearInterval(bsInterval); }\n" +
 "\n" +
 "function renderKb() {\n" +
@@ -513,10 +714,12 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  const kEl = e.target.closest('.kb-key'); if(!kEl) return;\n" +
 "  e.preventDefault(); kEl.setPointerCapture(e.pointerId); ptrDown = true;\n" +
 "  const k = kEl.dataset.key;\n" +
-"  kEl.classList.add('pressed', 'show-popup'); vibe(8); playClick(k==='BACKSPACE'?'back':'letter');\n" +
+"  kEl.classList.add('pressed');\n" +
+"  if(state.keyPopups && kEl.classList.contains('letter-key')) kEl.classList.add('show-popup');\n" +
+"  vibe(8); playClick(k==='BACKSPACE'?'back':'letter');\n" +
 "  if(k === 'BACKSPACE') {\n" +
 "    doBackspace();\n" +
-"    bsTimeout = setTimeout(() => { bsInterval = setInterval(() => { doBackspace(); vibe(4); playClick('back'); }, 70); }, 400);\n" +
+"    bsTimeout = setTimeout(() => { bsInterval = setInterval(() => { doBackspace(); vibe(4); playClick('back'); }, 65); }, 380);\n" +
 "  } else if(k === 'SPACE') { spcStart = e.clientX; }\n" +
 "  else if(state.swipeType && state.layout === 'letters' && kEl.classList.contains('letter-key')) {\n" +
 "    isGliding = false; gPts = [{x: e.clientX, y: e.clientY}]; gSeq = [k];\n" +
@@ -527,9 +730,9 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  if(!ptrDown) return;\n" +
 "  const kEl = e.target.closest('.kb-key'); if(!kEl) return;\n" +
 "  const k = kEl.dataset.key;\n" +
-"  if(k === 'SPACE') {\n" +
+"  if(k === 'SPACE' && state.spaceTrackpad) {\n" +
 "    const dx = e.clientX - spcStart;\n" +
-"    if(Math.abs(dx) > 15) { if(window.AndroidIME) AndroidIME.moveCursor(dx > 0 ? 1 : -1); spcStart = e.clientX; vibe(4); }\n" +
+"    if(Math.abs(dx) > 14) { if(window.AndroidIME) AndroidIME.moveCursor(dx > 0 ? 1 : -1); spcStart = e.clientX; vibe(4); }\n" +
 "  } else if(state.swipeType && gPts.length > 0) {\n" +
 "    if(!isGliding && Math.hypot(e.clientX - gPts[0].x, e.clientY - gPts[0].y) > 9) {\n" +
 "      isGliding = true; glideCanvas.style.display = 'block'; glideCanvas.width = kbRows.clientWidth; glideCanvas.height = kbRows.clientHeight;\n" +
@@ -543,7 +746,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "      gCtx.clearRect(0,0,glideCanvas.width,glideCanvas.height);\n" +
 "      gCtx.beginPath(); gCtx.moveTo(gPts[0].x - r.left, gPts[0].y - r.top);\n" +
 "      for(let i=1; i<gPts.length; i++) gCtx.lineTo(gPts[i].x - r.left, gPts[i].y - r.top);\n" +
-"      gCtx.strokeStyle = '#3b82f6'; gCtx.lineWidth = 5; gCtx.lineCap = 'round'; gCtx.stroke();\n" +
+"      gCtx.strokeStyle = '#007AFF'; gCtx.lineWidth = 5; gCtx.lineCap = 'round'; gCtx.stroke();\n" +
 "    }\n" +
 "  }\n" +
 "});\n" +
@@ -554,9 +757,10 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  if(isGliding) {\n" +
 "    isGliding = false; glideCanvas.style.display = 'none'; gCtx.clearRect(0,0,glideCanvas.width,glideCanvas.height);\n" +
 "    if(gSeq.length >= 2) {\n" +
+"      const allWords = [...Object.keys(learnedDict.words || {}), ...WORD_POOL];\n" +
 "      let reg = new RegExp('^' + gSeq.join('.*') + '$', 'i');\n" +
-"      let match = WORD_POOL.find(w => reg.test(w)) || WORD_POOL.find(w => w.toLowerCase().startsWith(gSeq[0]) && w.toLowerCase().endsWith(gSeq[gSeq.length-1]));\n" +
-"      if(match) commit(match + ' ');\n" +
+"      let match = allWords.find(w => reg.test(w)) || allWords.find(w => w.toLowerCase().startsWith(gSeq[0]) && w.toLowerCase().endsWith(gSeq[gSeq.length-1]));\n" +
+"      if(match) { commit(match + ' '); learnWord(match); state.currentWord = ''; updateSmartPredictions(); }\n" +
 "    }\n" +
 "    return;\n" +
 "  }\n" +
@@ -569,20 +773,42 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  } else if(k === '123') { state.layout = 'numbers'; renderKb(); }\n" +
 "  else if(k === '#+=') { state.layout = 'symbols'; renderKb(); }\n" +
 "  else if(k === 'ABC') { state.layout = 'letters'; renderKb(); }\n" +
-"  else if(k === 'RETURN') { if(window.AndroidIME) AndroidIME.sendEnter(); }\n" +
-"  else if(k === 'SPACE') { commit(' '); }\n" +
-"  else if(k !== 'BACKSPACE') {\n" +
+"  else if(k === 'RETURN') {\n" +
+"    if(state.currentWord) { learnWord(state.currentWord); state.currentWord = ''; }\n" +
+"    if(window.AndroidIME) AndroidIME.sendEnter();\n" +
+"    if(state.autoCap) { state.shiftState = 1; renderKb(); }\n" +
+"    updateSmartPredictions();\n" +
+"  } else if(k === 'SPACE') {\n" +
+"    const now = Date.now();\n" +
+"    if(state.doubleSpacePeriod && (now - state.lastSpaceTap < 280) && state.currentWord === '') {\n" +
+"      if(window.AndroidIME) { AndroidIME.deleteText(); AndroidIME.commitText('. '); }\n" +
+"      if(state.autoCap) { state.shiftState = 1; renderKb(); }\n" +
+"    } else {\n" +
+"      if(state.currentWord) { learnWord(state.currentWord); state.currentWord = ''; }\n" +
+"      commit(' ');\n" +
+"    }\n" +
+"    state.lastSpaceTap = now;\n" +
+"    updateSmartPredictions();\n" +
+"  } else if(k !== 'BACKSPACE') {\n" +
 "    const c = (state.layout === 'letters' && state.shiftState > 0) ? k.toUpperCase() : k;\n" +
-"    commit(c); if(state.shiftState === 1) { state.shiftState = 0; renderKb(); }\n" +
+"    commit(c);\n" +
+"    if(/^[a-zA-Z']$/.test(c)) state.currentWord += c;\n" +
+"    else if(state.currentWord) { learnWord(state.currentWord); state.currentWord = ''; }\n" +
+"    if(state.shiftState === 1) { state.shiftState = 0; renderKb(); }\n" +
+"    else if(state.autoCap && (c === '.' || c === '!' || c === '?')) { state.shiftState = 1; renderKb(); }\n" +
+"    updateSmartPredictions();\n" +
 "  }\n" +
 "});\n" +
 "\n" +
-"function updatePredictions(lastChar) {\n" +
-"  const p = WORD_POOL.filter(w => w.toLowerCase().startsWith((lastChar||'t').toLowerCase())).slice(0,3);\n" +
-"  document.querySelectorAll('.sug-btn').forEach((b,i) => { const w = p[i] || WORD_POOL[i]; b.textContent = w; b.dataset.w = w; });\n" +
-"}\n" +
 "document.getElementById('predictionsContainer').onclick = e => {\n" +
-"  const b = e.target.closest('.sug-btn'); if(b) { vibe(8); commit(b.dataset.w + ' '); }\n" +
+"  const b = e.target.closest('.sug-btn');\n" +
+"  if(b) {\n" +
+"    vibe(8);\n" +
+"    const w = b.dataset.w;\n" +
+"    if(state.currentWord && window.AndroidIME) AndroidIME.replaceCurrentWord(w + ' ');\n" +
+"    else commit(w + ' ');\n" +
+"    learnWord(w); state.currentWord = ''; updateSmartPredictions();\n" +
+"  }\n" +
 "};\n" +
 "\n" +
 "function closeAllDrawers() {\n" +
@@ -627,21 +853,24 @@ public class IOSAiKeyboardService extends InputMethodService {
 "  applyGlass(v);\n" +
 "  if(window.AndroidIME) AndroidIME.savePrefInt('glass', v);\n" +
 "};\n" +
-"document.getElementById('numRowToggle').onchange = e => {\n" +
-"  state.numberRow = e.target.checked;\n" +
+"document.getElementById('numRowSwitch').onclick = function() {\n" +
+"  state.numberRow = !state.numberRow;\n" +
+"  this.classList.toggle('active', state.numberRow);\n" +
+"  vibe(8);\n" +
 "  if(window.AndroidIME) AndroidIME.savePrefBool('numberRow', state.numberRow);\n" +
 "  renderKb();\n" +
 "};\n" +
-"document.getElementById('swipeToggle').onchange = e => {\n" +
-"  state.swipeType = e.target.checked;\n" +
+"document.getElementById('swipeSwitch').onclick = function() {\n" +
+"  state.swipeType = !state.swipeType;\n" +
+"  this.classList.toggle('active', state.swipeType);\n" +
+"  vibe(8);\n" +
 "  if(window.AndroidIME) AndroidIME.savePrefBool('swipeType', state.swipeType);\n" +
 "};\n" +
-"document.getElementById('soundToggle').onchange = e => {\n" +
-"  state.soundEffects = e.target.checked;\n" +
+"document.getElementById('soundSwitch').onclick = function() {\n" +
+"  state.soundEffects = !state.soundEffects;\n" +
+"  this.classList.toggle('active', state.soundEffects);\n" +
+"  vibe(8);\n" +
 "  if(window.AndroidIME) AndroidIME.savePrefBool('soundEffects', state.soundEffects);\n" +
-"};\n" +
-"document.getElementById('apiKeyInput').onchange = e => {\n" +
-"  if(window.AndroidIME) AndroidIME.savePrefString('apiKey', e.target.value.trim());\n" +
 "};\n" +
 "\n" +
 "const eg = document.getElementById('emojiGrid');\n" +
@@ -665,7 +894,7 @@ public class IOSAiKeyboardService extends InputMethodService {
 "    const raw = window.AndroidIME ? AndroidIME.getFieldText() : '';\n" +
 "    if(!raw || !raw.trim()) { toast('Type text first!'); return; }\n" +
 "    const mode = btn.dataset.ai;\n" +
-"    const apiKey = document.getElementById('apiKeyInput').value.trim();\n" +
+"    const apiKey = state.apiKey;\n" +
 "    toast('AI Processing...');\n" +
 "    if(apiKey) {\n" +
 "      try {\n" +
