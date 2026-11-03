@@ -3,11 +3,23 @@
 ​<uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.VIBRATE" />
 ​<application
-android:allowBackup="false"
-android:icon="@android:drawable/sym_def_app_icon"
+android:allowBackup="true"
+android:icon="@drawable/ic_ios_keyboard"
+android:roundIcon="@drawable/ic_ios_keyboard"
 android:label="IOS Keyboard AI"
 android:supportsRtl="true"
 android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+​<!-- App Drawer Launcher & Settings Activity -->
+<activity
+android:name=".SettingsActivity"
+android:label="IOS Keyboard AI"
+android:exported="true"
+android:windowSoftInputMode="stateHidden|adjustResize">
+<intent-filter>
+<action android:name="android.intent.action.MAIN" />
+<category android:name="android.intent.category.LAUNCHER" />
+</intent-filter>
+</activity>
 ​<!-- Core Keyboard Service -->
 <service
 android:name=".IOSAiKeyboardService"
