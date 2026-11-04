@@ -36,6 +36,10 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("KeyboardPrefs", MODE_PRIVATE);
 
+        if (!prefs.getBoolean("ios_v3_radius_migrated", false)) {
+            prefs.edit().putInt("radius", 5).putBoolean("ios_v3_radius_migrated", true).apply();
+        }
+
         webView = new WebView(this);
         applyNativeSystemBarColors(prefs.getString("theme", "dark"));
 
@@ -50,7 +54,6 @@ public class SettingsActivity extends AppCompatActivity {
         setContentView(webView);
     }
 
-    // BUG FIX #5: Match Android Status Bar & Navigation Bar to Light (#F2F2F7) or Dark (#000000) theme
     private void applyNativeSystemBarColors(String theme) {
         runOnUiThread(() -> {
             try {
@@ -58,8 +61,12 @@ public class SettingsActivity extends AppCompatActivity {
                 if (window == null) return;
                 boolean isLight = "light".equalsIgnoreCase(theme);
                 int bgColor = isLight ? Color.parseColor("#F2F2F7") : Color.parseColor("#000000");
+                int navColor = isLight ? Color.parseColor("#D1D4DB") : Color.parseColor("#1C1D24");
                 window.setStatusBarColor(bgColor);
-                window.setNavigationBarColor(bgColor);
+                window.setNavigationBarColor(navColor);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.setNavigationBarContrastEnforced(false);
+                }
                 if (webView != null) webView.setBackgroundColor(bgColor);
 
                 View decor = window.getDecorView();
@@ -170,7 +177,7 @@ public class SettingsActivity extends AppCompatActivity {
                 obj.put("width", prefs.getInt("width", 100));
                 obj.put("scale", prefs.getInt("scale", 100));
                 obj.put("numScale", prefs.getInt("numScale", 85));
-                obj.put("radius", prefs.getInt("radius", 6));
+                obj.put("radius", prefs.getInt("radius", 5));
                 obj.put("gap", prefs.getInt("gap", 6));
                 obj.put("glass", prefs.getInt("glass", 0));
                 obj.put("vibeStrength", prefs.getInt("vibeStrength", 10));
@@ -250,8 +257,10 @@ public class SettingsActivity extends AppCompatActivity {
 "  --ios-blue: #007AFF;\n" +
 "  --ios-green: #34C759;\n" +
 "  --ios-red: #FF453A;\n" +
+"  /* BUG FIX #11: Authentic iOS UISegmentedControl pill colors */\n" +
 "  --seg-bg: rgba(118, 118, 128, 0.24);\n" +
 "  --seg-pill: #636366;\n" +
+"  --seg-active-text: #FFFFFF;\n" +
 "}\n" +
 "html.light {\n" +
 "  --ios-bg: #F2F2F7;\n" +
@@ -260,8 +269,10 @@ public class SettingsActivity extends AppCompatActivity {
 "  --ios-text: #000000;\n" +
 "  --ios-sub: #6D6D72;\n" +
 "  --ios-sep: rgba(60, 60, 67, 0.18);\n" +
-"  --seg-bg: rgba(118, 118, 128, 0.12);\n" +
+"  /* BUG FIX #11: Crisp floating white card pill with dark text in Light Mode */\n" +
+"  --seg-bg: rgba(118, 118, 128, 0.14);\n" +
 "  --seg-pill: #FFFFFF;\n" +
+"  --seg-active-text: #000000;\n" +
 "}\n" +
 "html.nothing {\n" +
 "  --ios-bg: #000000;\n" +
@@ -271,11 +282,13 @@ public class SettingsActivity extends AppCompatActivity {
 "  --ios-sep: rgba(255, 255, 255, 0.22);\n" +
 "  --ios-blue: #EA1D25;\n" +
 "  --ios-green: #EA1D25;\n" +
+"  --seg-bg: rgba(255, 255, 255, 0.12);\n" +
+"  --seg-pill: #EA1D25;\n" +
+"  --seg-active-text: #FFFFFF;\n" +
 "}\n" +
 "* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }\n" +
-"/* BUG FIX #6: Generous 360px bottom padding so all sliders scroll smoothly above the open keyboard */\n" +
 "body {\n" +
-"  margin: 0; padding: 0 0 360px 0;\n" +
+"  margin: 0; padding: 0 0 380px 0;\n" +
 "  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', sans-serif;\n" +
 "  background-color: var(--ios-bg); color: var(--ios-text);\n" +
 "  overflow-x: hidden; overflow-y: auto;\n" +
@@ -353,19 +366,21 @@ public class SettingsActivity extends AppCompatActivity {
 "  transition: transform 0.14s cubic-bezier(0.2, 0.9, 0.3, 1.2);\n" +
 "}\n" +
 ".ios-slider::-webkit-slider-thumb:active { transform: scale(1.14); }\n" +
+"/* BUG FIX #11: Authentic iOS UISegmentedControl with floating white card pill in Light Mode */\n" +
 ".ios-segmented {\n" +
 "  display: flex; background-color: var(--seg-bg);\n" +
-"  padding: 3px; border-radius: 9px; gap: 3px; width: 100%;\n" +
+"  padding: 2.5px; border-radius: 9px; gap: 2px; width: 100%;\n" +
 "}\n" +
 ".seg-item {\n" +
-"  flex: 1; text-align: center; padding: 7px 6px;\n" +
-"  font-size: 13px; font-weight: 600; border-radius: 7px;\n" +
-"  color: var(--ios-text); cursor: pointer;\n" +
+"  flex: 1; text-align: center; padding: 6.5px 6px;\n" +
+"  font-size: 13px; font-weight: 500; border-radius: 7px;\n" +
+"  color: var(--ios-text); opacity: 0.78; cursor: pointer;\n" +
 "  transition: all 0.2s cubic-bezier(0.32, 0.72, 0, 1);\n" +
 "}\n" +
 ".seg-item.active {\n" +
-"  background-color: var(--ios-blue); color: #FFFFFF;\n" +
-"  box-shadow: 0 2px 6px rgba(0,0,0,0.22);\n" +
+"  background-color: var(--seg-pill); color: var(--seg-active-text);\n" +
+"  font-weight: 600; opacity: 1;\n" +
+"  box-shadow: 0 3px 8px rgba(0,0,0,0.12), 0 3px 1px rgba(0,0,0,0.04);\n" +
 "}\n" +
 ".live-test-input {\n" +
 "  width: 100%; padding: 11px 14px; border-radius: 10px;\n" +
@@ -448,8 +463,8 @@ public class SettingsActivity extends AppCompatActivity {
 "        <input id='numScaleSlider' type='range' min='65' max='115' value='85' class='ios-slider' />\n" +
 "      </div>\n" +
 "      <div class='slider-block'>\n" +
-"        <div class='slider-head'><span class='row-title'>Key Corner Radius</span><span id='radiusVal' class='slider-val'>6px</span></div>\n" +
-"        <input id='radiusSlider' type='range' min='4' max='14' value='6' class='ios-slider' />\n" +
+"        <div class='slider-head'><span class='row-title'>Key Corner Radius</span><span id='radiusVal' class='slider-val'>5px</span></div>\n" +
+"        <input id='radiusSlider' type='range' min='4' max='8' value='5' class='ios-slider' />\n" +
 "      </div>\n" +
 "      <div class='slider-block'>\n" +
 "        <div class='slider-head'><span class='row-title'>Key Spacing Gap</span><span id='gapVal' class='slider-val'>6px</span></div>\n" +
@@ -587,7 +602,7 @@ public class SettingsActivity extends AppCompatActivity {
 "  try {\n" +
 "    const data = JSON.parse(jsonStr || '{}');\n" +
 "    const words = data.words || {};\n" +
-"    const validKeys = Object.keys(words).filter(w => w.length >= 2 && !/^[A-Z]{2,}[a-z]+$/.test(w));\n" +
+"    const validKeys = Object.keys(words).filter(w => w.length >= 2 && (w === 'iOS' || !/^[A-Z]{2,}[a-z]+$/.test(w)));\n" +
 "    const sorted = validKeys.sort((a,b) => words[b] - words[a]);\n" +
 "    lbl.textContent = sorted.length + ' Personal Words Learned';\n" +
 "    sorted.slice(0, 18).forEach(w => {\n" +
@@ -613,13 +628,14 @@ public class SettingsActivity extends AppCompatActivity {
 "\n" +
 "    const p = JSON.parse(AndroidApp.getPrefsJson());\n" +
 "    setThemeUI(p.theme || 'dark', false);\n" +
+"    const clampedRadius = Math.min(8, Math.max(4, typeof p.radius === 'number' ? p.radius : 5));\n" +
 "    const map = [\n" +
 "      ['glassSlider','glassVal',p.glass,0,'%'],\n" +
 "      ['heightSlider','heightVal',p.height,216,'px'],\n" +
 "      ['widthSlider','widthVal',p.width,100,'%'],\n" +
 "      ['scaleSlider','scaleVal',p.scale,100,'%'],\n" +
 "      ['numScaleSlider','numScaleVal',p.numScale,85,'%'],\n" +
-"      ['radiusSlider','radiusVal',p.radius,6,'px'],\n" +
+"      ['radiusSlider','radiusVal',clampedRadius,5,'px'],\n" +
 "      ['gapSlider','gapVal',p.gap,6,'px'],\n" +
 "      ['vibeSlider','vibeVal',p.vibeStrength,10,'ms']\n" +
 "    ];\n" +
